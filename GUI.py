@@ -73,9 +73,8 @@ def get_scaler(txt_path: str):
 
 
 ## Area regions porporties
-def generate_regions_properties(preprocessed_img, scaler=None) -> pd.DataFrame:
-    labels = measure.label(preprocessed_img)
-    regions = measure.regionprops(label_image=labels)
+def generate_regions_properties(img, scaler=None) -> pd.DataFrame:
+    labels = measure.label(img)
 
     regions_table = measure.regionprops_table(
         label_image=labels, intensity_image=img, properties=properties
@@ -229,7 +228,7 @@ app.layout = html.Div(className="container",
                                 id="preprocessed_image",
                                 style={'width': '80', 'height': '50vh'}
                             ),
-                            html.Div(id="property-table")
+                            html.Table(id="property-table")
                         ]),
                         html.Div([
                             html.H3("Pore Distribution"),
@@ -311,7 +310,7 @@ def threshold_defined(threshold):
 
 @callback(
         Output("preprocessed_image", "fig"),
-        Output("property_table", "table"),
+        Output("property-table", "table"),
         Input("original_image", "children"),
         Input("threshold-input", "value"),
         State("original_info", "children")
@@ -321,7 +320,7 @@ def preprocessed_image(contents, threshold, info):
     bw = img_preprocess(img_arr, threshold=threshold, min_size=min_size)
     fig = px.imshow(bw, binary_string=True, title="threshold: %d" % threshold)
 
-    table = generate_regions_properties(preprocessed_img=bw, scaler=info)
+    table = generate_regions_properties(img=bw, scaler=info)
     return fig, table
 
 
