@@ -15,7 +15,8 @@ import numpy as np
 from skimage import filters, measure, color, img_as_ubyte
 import PIL
 import pandas as pd
-import matplotlib as mpl
+from concurrent.futures import ThreadPoolExecutor
+
 
 external_stylesheets = [dbc.themes.BOOTSTRAP, "assets/object_properties_style.css"]
 app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
@@ -33,48 +34,6 @@ prop_names = [
     ]
 
 
-img_upload = dbc.Card(
-    dbc.CardBody([
-    dcc.Upload(
-    id='upload-img',
-    children=html.Div([
-        'Drag and Drop or ',
-        html.A('Select Files')
-    ]),
-    
-    style={
-        'width': '100%',
-        'height': '60px',
-        'lineHeight': '60px',
-        'borderWidth': '1px',
-        'borderStyle': 'dashed',
-        'borderRadius': '5px',
-        'textAlign': 'center',
-        'margin': '10px'
-    },
-    # Allow multiple files to be uploaded
-    multiple=False,
-    ),
-    html.Div([
-        html.H3("Original Image"),
-        dcc.Graph(
-            id="output-img",
-            style={'width': '80', 'height': '50vh'}
-        ),
-        
-    ]),
-])
-)
-
-threshold_input = dbc.Card(
-    dbc.CardBody([
-        html.H4("Threshold", className="card-title"),
-        dbc.Input(type="number", value=90, min=0, max=255, id='threshold-input'),
-        html.P("* threshold = grayscale", className="card-text")
-    ])
-)
-
-
 def parse_contents_to_array(contents):
     _, content_string = contents.split(',')
 
@@ -85,7 +44,6 @@ def parse_contents_to_array(contents):
 
 def get_preprocessed_img(img, threshold=None):
     # img = io.imread(filename, as_gray=True)
-    rows, cols = img.shape[0], img.shape[1]
     
     if threshold is None:
         threshold = filters.threshold_otsu(img)
@@ -100,16 +58,18 @@ def get_preprocessed_img(img, threshold=None):
     
     return table, label_array
 
+## Thread with img_with_contour
+progress = {'value': 0}
+
 
 def img_with_contour(img: np.array, label_img: np.array, region_table: pd.DataFrame):
     # plot the original image
-    fig = px.imshow(img, origin="lower", binary_string=True)
+    fig = px.imshow(img, binary_string=True)
 
     for rid, row in region_table.iterrows():
-        print("Running contours lines .... (%d/%d)" % (rid, label_img.max()))
-        fig.update_layout(
-            title="Running contours lines .... "
-        )
+        
+        progress['value'] = int((rid+1) / label_img.max() * 100)
+
         label = row.label
         contour = measure.find_contours(label_img == label, level=0.5)[0]
         y, x = contour.T
@@ -127,13 +87,41 @@ def img_with_contour(img: np.array, label_img: np.array, region_table: pd.DataFr
                 hoveron='points+fills'
             )
         )
-        fig.update_layout(
+    fig.update_layout(
             title=f'Number of pores: {len(region_table)}'
         )
+
 
     return fig
 
 
+def plot_pore_distribution(property_table: pd.DataFrame):
+    counts, bins = np.histogram(property_table["area"], bins=100)
+    fig = go.Figure(data=[go.Bar(x=bins, y=counts, width=1, marker_color='darkblue')])
+
+    fig.update_layout(
+        title='Pore Size Distribution<br>' + f'Number of pores: {len(property_table)}',
+        xaxis=dict(title='Pore Size'),
+        yaxis=dict(title='Count'),
+    )
+    return fig
+
+def generate_analysis_table(img, property_table, scaler):
+    rows, cols = img.shape[0], img.shape[1]
+    pixels = rows * cols
+    real_area = pixels * (scaler ** 2)
+    porosity = sum(property_table["area"]) / (pixels)
+
+    metrics = [
+        {"Name": "Total Pixels", "Value": pixels},
+        {"Name": "Total Area (um2)", "Value": real_area},
+        {"Name": "Porosity", "Value": porosity},
+        {"Name": "Pore Area (pixels)", "Value": pixels * porosity},
+        {"Name": "Pore Area (um2)", "Value": real_area * porosity},
+        {"Name": "Material Area (pixels)", "Value": pixels * (1 - porosity)},
+        {"Name": "Matreial Area (um2)", "Value": real_area * (1 - porosity)}
+    ]
+    return metrics
 
 with open("README.md", "r") as f:
     howto_md = f.read()
@@ -211,19 +199,79 @@ header = dbc.Navbar(
     dark=True,
 )
 
-# Define Cards
+img_upload = dbc.Card(
+    dbc.CardBody([
+    dcc.Upload(
+    id='upload-img',
+    children=html.Div([
+        'Drag and Drop or ',
+        html.A('Select Files')
+    ]),
+    
+    style={
+        'width': '100%',
+        'height': '60px',
+        'lineHeight': '60px',
+        'borderWidth': '1px',
+        'borderStyle': 'dashed',
+        'borderRadius': '5px',
+        'textAlign': 'center',
+        'margin': '10px'
+    },
+    # Allow multiple files to be uploaded
+    multiple=False,
+    ),
+    html.Div([
+        html.H3("Original Image"),
+        dcc.Graph(
+            id="output-img",
+            style={'width': '80', 'height': '50vh'}
+        ),
+        
+    ]),
+    html.Div([
+        html.H3("Original Image"),
+        dcc.Graph(
+            id="output-preprocessed-img",
+            style={'width': '80', 'height': '50vh'}
+        ),
+        
+    ]),
+])
+)
 
+threshold_input = dbc.Card(
+    dbc.CardBody([
+        html.H4("Threshold", className="card-title"),
+        dbc.Input(type="number", value=90, min=0, max=255, id='threshold-input'),
+        html.P("* threshold = grayscale", className="card-text")
+    ])
+)
+
+scaler_input = dbc.Card(
+    dbc.CardBody([
+        html.H4("Scaler", className="card-title"),
+        dbc.Input(type="number", value=1, id='scaler-input'),
+        html.P(r"$* 1 pixel = __ um$", className="card-text")
+    ])
+)
+
+# Define Cards
 image_card = dbc.Card(
     [
-        dbc.CardHeader(html.H2("Explore object properties")),
+        dbc.CardHeader(html.H2("Pores location", style={'color': 'black'})),
         html.Div([
                     dbc.Button(
                     'RUN', 
                     id='run-contour-plot', 
                     n_clicks=0,
                     style={'background-color': 'blue', 'color': 'white'})
-                    ]), 
-        dbc.CardBody(  
+                    ]),
+        html.Div([
+                dcc.Interval(id="progress-interval", interval=500),
+                dbc.Progress(id="progress-bar", value=0, label="0%", striped=True, animated=True, style={'width': '50%'}),
+            ]),
+        dbc.CardBody(              
             dbc.Row(
                 dbc.Col(
                     dcc.Graph(
@@ -238,7 +286,6 @@ image_card = dbc.Card(
                     dbc.Col(
                         "Use the dropdown menu to select which variable to base the colorscale on:"
                     ),
-                    # dbc.Col(color_drop),
                     dbc.Toast(
                         [
                             html.P(
@@ -259,54 +306,26 @@ image_card = dbc.Card(
                     ),
                 ],
                 align="center",
-            ),
-        ),
-    ]
-)
-
-
-def plot_pore_distribution(property_table: pd.DataFrame):
-    counts, bins = np.histogram(property_table["area"], bins=100)
-    fig = go.Figure(data=[go.Bar(x=bins, y=counts, width=1, marker_color='darkblue')])
-
-    # 设置图表布局
-    fig.update_layout(
-        title='Pore Size Distribution<br>' + f'Number of pores: {len(property_table)}',
-        xaxis=dict(title='Pore Size'),
-        yaxis=dict(title='Count'),
-    )
-    return fig
-
-def generate_analysis_table(img, property_table, scaler):
-    rows, cols = img.shape[0], img.shape[1]
-    pixels = rows * cols
-    real_area = pixels * (scaler ** 2)
-    porosity = sum(property_table["area"]) / (pixels)
-
-    metrics = [
-        {"Name": "Total Pixels", "Value": pixels},
-        {"Name": "Total Area (um2)", "Value": real_area},
-        {"Name": "Porosity", "Value": porosity},
-        {"Name": "Pore Area (pixels)", "Value": pixels * porosity},
-        {"Name": "Pore Area (um2)", "Value": real_area * porosity},
-        {"Name": "Material Area (pixels)", "Value": pixels * (1 - porosity)},
-        {"Name": "Matreial Area (um2)", "Value": real_area * (1 - porosity)}
-    ]
-    return metrics
+            )),
+])
 
 
 
-distribution_card = dbc.Card(
+
+
+
+distribution_card = dbc.Card([
+    dbc.CardHeader(html.H2("Pore Distribution", style={'color': 'black'})),
     dbc.CardBody([
         html.H4("Distribution plot", className="card-title"),
         dcc.Graph(id='distribution-plot'),
         html.P("Adjust the threshold.", className="card-text")
     ])
-)
+])
 
 metric_card = dbc.Card(
     [
-        dbc.CardHeader(html.H2("Results Table")),
+        dbc.CardHeader(html.H2("Analysis Table", style={'color': 'black'})),
         dbc.CardBody(
             dbc.Row(
                 dbc.Col(
@@ -318,7 +337,6 @@ metric_card = dbc.Card(
                                 style_header=dict(backgroundColor="darkblue", fontWeight="bold", fontColor="white"),
                                 style_data=dict(backgroundColor="black")
                         ),
-                        # html.Div(id="results", hidden=True, children=None),xs
                     ]
                 )
             )
@@ -330,13 +348,14 @@ app.layout = html.Div(
     [
         header,        
         dbc.Container(
-            [dbc.Row([dbc.Col(img_upload, md=10), dbc.Col(threshold_input, md=2)]),
+            [dbc.Row([dbc.Col(img_upload, md=10),  
+                      dbc.Col([dbc.Row(threshold_input), 
+                              dbc.Row(scaler_input)], md=2)]),
              dbc.Row([dbc.Col(image_card, md=10)]),
              dbc.Row([dbc.Col(distribution_card, md=10)]),
              dbc.Row([dbc.Col(metric_card, md=8)])
              ],
             
-                # dbc.Row([dbc.Col(image_card, md=5), dbc.Col(metric_card, md=5)])],
             fluid=True,
         ),
     ]
@@ -345,47 +364,89 @@ app.layout = html.Div(
 
 @app.callback(
         Output('output-img', 'figure'),
-        Output("graph", "figure"),
-        Output("distribution-plot", "figure"),
-        Output("results", "data"),
+        Output("output-preprocessed-img", "figure"),
         Input("upload-img", "contents"),
-        Input("threshold-input", "value")
+        Input("threshold-input", "value"),
+        Input("scaler-input", "value")
 )
-def update_image(contents, threshold):
+def update_image(contents, threshold, scaler):
     img = parse_contents_to_array(contents)
-    table, prep_img = get_preprocessed_img(img=img, threshold=threshold)
-    fig = px.imshow(prep_img, origin="lower", binary_string=True)
+
+    fig = px.imshow(img, binary_string=True)
     fig.update_layout(
+        title=f'Original Image',
+    )
+
+    _, prep_img = get_preprocessed_img(img=img, threshold=threshold)
+    prep_fig = px.imshow(prep_img, binary_string=True)
+    prep_fig.update_layout(
         title=f'Pore definition is the gray scale <= {threshold}',
     )
 
-    contour_img = img_with_contour(img=img, label_img=prep_img, region_table=table)
+    return fig, prep_fig
+
+
+@app.callback(
+    Output('progress-bar', 'value'),
+    Output('progress-bar', 'label'),
+    Input('progress-interval', 'n_intervals'),
+    prevent_initial_call=True
+)
+def update_progress(n):
+    return progress['value'], f"{progress['value']}%"
+
+
+
+executor = ThreadPoolExecutor(max_workers=1) 
+
+
+@app.callback(
+    Output('run-contour-plot', 'n_clicks'),
+    Output('graph', 'figure'),
+    Output("distribution-plot", "figure"),
+    Output("results", "data"),
+    Input('run-contour-plot', 'n_clicks'),
+    State("output-img", "figure"),
+    State("threshold-input", "value"),
+    State("scaler-input", "value"),
+    prevent_initial_call=True
+)
+def start_long_process(n_clicks, fig, threshold, scaler):
+    contents = fig['data'][0]['source']
+    img = parse_contents_to_array(contents=contents)
+    table, prep_img = get_preprocessed_img(img=img, threshold=threshold)
+
+    if n_clicks > 0:
+        future = executor.submit(img_with_contour, img, prep_img, table)
+        contour = future.result()
     distribution_plot = plot_pore_distribution(property_table=table)
-    metrics_table = generate_analysis_table(img=img, property_table=table, scaler=317)
-    return fig, contour_img, distribution_plot, metrics_table
+    metrics_table = generate_analysis_table(img=img, property_table=table, scaler=scaler)
+    return True, contour, distribution_plot, metrics_table
 
 
-# @app.callback(
-#         Output("threshold-input", "value"),
-#         Input("threshold-input", "value")
-# )
-# def threshold_defined(threshold):
-#     return threshold
+
+
 
 # @app.callback(
+#         Output('progress-bar', 'value'),
 #         Output("graph", "figure"),
 #         Output("distribution-plot", "figure"),
-#         State("upload-img", "contents"),
-#         State("threshold-input", "value"),
+#         Output("results", "data"),
 #         Input("run-contour-plot", "n_clicks"),
+#         Input('progress-interval', 'n_intervals'),
+#         State("output-img", "figure"),
+#         State("threshold-input", "value"),
 # )
-# def contour(n_clicks, threshold, contents):
+# def contour(n_clicks, n, fig, threshold):
+#     contents = fig['data'][0]['source']
 #     img = parse_contents_to_array(contents=contents)
 #     table, prep_img = get_preprocessed_img(img=img, threshold=threshold)
+    
 #     contour_img = img_with_contour(img=img, label_img=prep_img, region_table=table)
+
 #     distribution_plot = plot_pore_distribution(property_table=table)
-#     # metrics_table = generate_analysis_table(property_table=table)
-#     return contour_img, distribution_plot
+#     metrics_table = generate_analysis_table(img=img, property_table=table, scaler=317)
+#     return progress['value'], contour_img, distribution_plot, metrics_table
 
 
 
