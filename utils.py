@@ -34,13 +34,28 @@ prop_names = [
         "mean_intensity",
     ]
 
-
 def parse_contents_to_array(contents):
     _, content_string = contents.split(',')
 
     decoded = base64.b64decode(content_string)
     image = Image.open(io.BytesIO(decoded))
     return np.array(image)
+
+
+def array_to_base64_str(image_array):
+    # Convert the NumPy array to a PIL Image object
+    image = Image.fromarray(image_array.astype(np.uint8))
+    
+    # Save the image object to an in-memory bytes buffer
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")  # PNG is lossless
+    buffer.seek(0)
+    
+    # Encode the image bytes in base64
+    base64_str = base64.b64encode(buffer.read()).decode('utf-8')
+    return f"data:image/png;base64,{base64_str}"
+
+
 
 
 def get_preprocessed_img(img, threshold=None):
@@ -166,13 +181,13 @@ header = dbc.Navbar(
                     dbc.Col(
                         html.A(
                             html.Img(
-                                src="Foxconn.png",
+                                src="assets/Foxconn.png",
                                 height="30px",
                             ),
                             href="https://www.foxconn.com/",
                         )
                     ),
-                    dbc.Col(dbc.NavbarBrand("SEM Image Pore Analysis App")),
+                    dbc.Col(dbc.NavbarBrand("A SEM Image Pore Analysis App by 高階分析實驗室")),
                     modal_overlay,
                 ],
                 align="center",
@@ -223,22 +238,30 @@ img_upload = dbc.Card(
     # Allow multiple files to be uploaded
     multiple=False,
     ),
-    html.Div([
-        html.H3("Original Image"),
-        dcc.Graph(
-            id="output-img",
-            style={'width': '80', 'height': '50vh'}
-        ),
-        
-    ]),
-    html.Div([
-        html.H3("Original Image"),
-        dcc.Graph(
-            id="output-preprocessed-img",
-            style={'width': '80', 'height': '50vh'}
-        ),
-        
-    ]),
+    dbc.Row([
+        dbc.Col(
+            html.Div([
+                html.H3("Original Image", style={'color': 'black'}),
+                html.Img(id='output-img-str', src='', style={'max-width': '70%', 'max-height': '80%',}),
+                # dcc.Graph(
+                #     id="output-img",
+                #     style={'width': '80', 'height': '50vh'}
+                # ),
+            ]),
+        ), 
+        dbc.Col(
+                html.Div([
+                html.H3("Filtered Image", style={'color': 'black'}),
+                html.Img(id='output-preprocessed-img-str', src='', style={'max-width': '70%', 'max-height': '80%',}),
+                # dcc.Graph(
+                #     id="output-preprocessed-img-src",
+                #     style={'width': '80', 'height': '50vh'}
+                # ),
+                
+            ])
+        )
+    ])
+    
 ])
 )
 
@@ -278,6 +301,7 @@ image_card = dbc.Card(
                 dbc.Col(
                     dcc.Graph(
                         id="graph",
+                        style={'width': '200', 'height': '60vh'}
                     ),
                 )
             )
@@ -289,25 +313,7 @@ image_card = dbc.Card(
                         ["Use the dropdown menu to select which variable to base the colorscale on:",
                         html.Button("Download CSV", id="contour-download"),
                         dcc.Download(id="download-contour-csv"),]
-                    ),
-                    dbc.Toast(
-                        [
-                            html.P(
-                                "In order to use all functions of this app, please select a variable "
-                                "to compute the colorscale on.",
-                                className="mb-0",
-                            )
-                        ],
-                        id="auto-toast",
-                        header="No colorscale value selected",
-                        icon="danger",
-                        style={
-                            "position": "fixed",
-                            "top": 66,
-                            "left": 10,
-                            "width": 350,
-                        },
-                    ),
+                    )
                 ],
                 align="center",
             )),
@@ -369,8 +375,10 @@ app.layout = html.Div(
 
 
 @app.callback(
-        Output('output-img', 'figure'),
-        Output("output-preprocessed-img", "figure"),
+        # Output('output-img', 'figure'),
+
+        Output("output-img-str", "src"),
+        Output("output-preprocessed-img-str", "src"),
         Input("upload-img", "contents"),
         Input("threshold-input", "value"),
         Input("scaler-input", "value")
@@ -382,14 +390,18 @@ def update_image(contents, threshold, scaler):
     fig.update_layout(
         title=f'Original Image',
     )
+    array_str = array_to_base64_str(img)
 
     _, prep_img = get_preprocessed_img(img=img, threshold=threshold)
-    prep_fig = px.imshow(prep_img, binary_string=True)
+    prep_fig = px.imshow(prep_img, color_continuous_scale='gray_r')
     prep_fig.update_layout(
         title=f'Pore definition is the gray scale <= {threshold}',
     )
+    prep_arr_str = array_to_base64_str(prep_img)
 
-    return fig, prep_fig
+    
+
+    return array_str, prep_arr_str
 
 
 @app.callback(
@@ -412,13 +424,13 @@ executor = ThreadPoolExecutor(max_workers=1)
     Output("distribution-plot", "figure"),
     Output("results", "data"),
     Input('run-contour-plot', 'n_clicks'),
-    State("output-img", "figure"),
+    State("output-img-str", "src"),
     State("threshold-input", "value"),
     State("scaler-input", "value"),
     prevent_initial_call=True
 )
-def start_long_process(n_clicks, fig, threshold, scaler):
-    contents = fig['data'][0]['source']
+def start_long_process(n_clicks, src, threshold, scaler):
+    contents = src
     img = parse_contents_to_array(contents=contents)
     table, prep_img = get_preprocessed_img(img=img, threshold=threshold)
 
@@ -433,15 +445,15 @@ def start_long_process(n_clicks, fig, threshold, scaler):
 @app.callback(
     Output("download-contour-csv", "data"),
     Input("contour-download", "n_clicks"),
-    State("output-img", "figure"),
+    State("output-img-str", "src"),
     State("threshold-input", "value"),
     State("scaler-input", "value"),
     prevent_initial_call=True
 )
-def download_pores_csv(n_clicks, fig, threshold, scaler):
+def download_pores_csv(n_clicks, src, threshold, scaler):
     if n_clicks is None:
         raise dash.exceptions.PreventUpdate
-    contents = fig['data'][0]['source']
+    contents = src
     img = parse_contents_to_array(contents=contents)
 
     # Convert DataFrame to a CSV string buffer
