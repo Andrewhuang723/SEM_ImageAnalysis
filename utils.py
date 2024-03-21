@@ -9,6 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import datetime
 import io
+from io import StringIO
 import base64
 from PIL import Image
 import numpy as np
@@ -48,6 +49,7 @@ def get_preprocessed_img(img, threshold=None):
     if threshold is None:
         threshold = filters.threshold_otsu(img)
 
+    # img = morphology.closing(img < threshold)
     label_array = measure.label(img < threshold)
     # Compute and store properties of the labeled image
     
@@ -164,10 +166,10 @@ header = dbc.Navbar(
                     dbc.Col(
                         html.A(
                             html.Img(
-                                src=app.get_asset_url("dash-logo-new.png"),
+                                src="Foxconn.png",
                                 height="30px",
                             ),
-                            href="https://plotly.com/dash/",
+                            href="https://www.foxconn.com/",
                         )
                     ),
                     dbc.Col(dbc.NavbarBrand("SEM Image Pore Analysis App")),
@@ -284,7 +286,9 @@ image_card = dbc.Card(
             dbc.Row(
                 [
                     dbc.Col(
-                        "Use the dropdown menu to select which variable to base the colorscale on:"
+                        ["Use the dropdown menu to select which variable to base the colorscale on:",
+                        html.Button("Download CSV", id="contour-download"),
+                        dcc.Download(id="download-contour-csv"),]
                     ),
                     dbc.Toast(
                         [
@@ -337,9 +341,11 @@ metric_card = dbc.Card(
                                 style_header=dict(backgroundColor="darkblue", fontWeight="bold", fontColor="white"),
                                 style_data=dict(backgroundColor="black")
                         ),
+                        html.Button("Download CSV", id="table-download"),
+                        dcc.Download(id="download-table-csv"),
                     ]
                 )
-            )
+            ),
         ),
     ]
 )
@@ -424,29 +430,49 @@ def start_long_process(n_clicks, fig, threshold, scaler):
     return True, contour, distribution_plot, metrics_table
 
 
+@app.callback(
+    Output("download-contour-csv", "data"),
+    Input("contour-download", "n_clicks"),
+    State("output-img", "figure"),
+    State("threshold-input", "value"),
+    State("scaler-input", "value"),
+    prevent_initial_call=True
+)
+def download_pores_csv(n_clicks, fig, threshold, scaler):
+    if n_clicks is None:
+        raise dash.exceptions.PreventUpdate
+    contents = fig['data'][0]['source']
+    img = parse_contents_to_array(contents=contents)
+
+    # Convert DataFrame to a CSV string buffer
+    buffer = StringIO()
+    df, _ = get_preprocessed_img(img=img, threshold=threshold)
+    df["area"] *= (scaler ** 2)
+    df["perimeter"] *= scaler
+
+    df.to_csv(buffer, index=False)
+    buffer.seek(0)
+    return dcc.send_string(buffer.getvalue(), "pores.csv")
 
 
+@app.callback(
+    Output("download-table-csv", "data"),
+    Input("table-download", "n_clicks"),
+    State("results", "data"),
+    prevent_initial_call=True
+)
+def download_metrics_csv(n_clicks, table):
+    if n_clicks is None:
+        raise dash.exceptions.PreventUpdate
 
-# @app.callback(
-#         Output('progress-bar', 'value'),
-#         Output("graph", "figure"),
-#         Output("distribution-plot", "figure"),
-#         Output("results", "data"),
-#         Input("run-contour-plot", "n_clicks"),
-#         Input('progress-interval', 'n_intervals'),
-#         State("output-img", "figure"),
-#         State("threshold-input", "value"),
-# )
-# def contour(n_clicks, n, fig, threshold):
-#     contents = fig['data'][0]['source']
-#     img = parse_contents_to_array(contents=contents)
-#     table, prep_img = get_preprocessed_img(img=img, threshold=threshold)
-    
-#     contour_img = img_with_contour(img=img, label_img=prep_img, region_table=table)
+    # Convert DataFrame to a CSV string buffer
+    buffer = StringIO()
+    df = pd.DataFrame(table)
+    df.to_csv(buffer, index=False)
+    buffer.seek(0)
+    return dcc.send_string(buffer.getvalue(), "table.csv")
 
-#     distribution_plot = plot_pore_distribution(property_table=table)
-#     metrics_table = generate_analysis_table(img=img, property_table=table, scaler=317)
-#     return progress['value'], contour_img, distribution_plot, metrics_table
+
 
 
 
