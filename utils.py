@@ -152,7 +152,7 @@ button_howto = dbc.Button(
     "View Code on github",
     outline=True,
     color="primary",
-    href="https://github.com/plotly/dash-sample-apps/tree/master/apps/dash-label-properties",
+    href="https://github.com/Andrewhuang723/SEM_ImageAnalysis",
     id="gh-link",
     style={"text-transform": "none"},
 )
