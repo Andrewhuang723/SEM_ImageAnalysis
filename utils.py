@@ -7,6 +7,7 @@ import dash_core_components as dcc
 import dash_bootstrap_components as dbc
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.figure_factory as ff
 import datetime
 import io
 from io import StringIO
@@ -112,14 +113,17 @@ def img_with_contour(img: np.array, label_img: np.array, region_table: pd.DataFr
     return fig
 
 
-def plot_pore_distribution(property_table: pd.DataFrame):
-    counts, bins = np.histogram(property_table["area"], bins=100)
-    fig = go.Figure(data=[go.Bar(x=bins, y=counts, width=1, marker_color='darkblue')])
+def plot_pore_distribution(property_table: pd.DataFrame, scaler=1):
+    
+    property_table["rescale_area"] = property_table["area"].apply(lambda x: x * (scaler ** 2))
+    fig = px.histogram(property_table, x='rescale_area', cumulative=True)
+
+
 
     fig.update_layout(
         title='Pore Size Distribution<br>' + f'Number of pores: {len(property_table)}',
-        xaxis=dict(title='Pore Size'),
-        yaxis=dict(title='Count'),
+        xaxis=dict(title="Pore Size(um^2)"),
+        yaxis=dict(title='Cumulative Sum'),
     )
     return fig
 
@@ -139,6 +143,23 @@ def generate_analysis_table(img, property_table, scaler):
         {"Name": "Matreial Area (um2)", "Value": real_area * (1 - porosity)}
     ]
     return metrics
+
+def generate_describe_table(img, property_table, scaler):
+    property_table["area"] *= (scaler ** 2)
+    property_table["perimeter"] *= scaler    
+    describe_table = property_table.describe()
+    
+    metrics = [
+        {"Name": 'mean', "Area": describe_table.loc["mean", "area"], "Perimeter": describe_table.loc["mean", "perimeter"], "Intensity": describe_table.loc["mean", "mean_intensity"]},
+        {"Name": 'std', "Area": describe_table.loc["std", "area"], "Perimeter": describe_table.loc["std", "perimeter"], "Intensity": describe_table.loc["std", "mean_intensity"]},
+        {"Name": 'min', "Area": describe_table.loc["min", "area"], "Perimeter": describe_table.loc["min", "perimeter"], "Intensity": describe_table.loc["min", "mean_intensity"]},
+        {"Name": '25%', "Area": describe_table.loc["25%", "area"], "Perimeter": describe_table.loc["25%", "perimeter"], "Intensity": describe_table.loc["25%", "mean_intensity"]},
+        {"Name": '50%', "Area": describe_table.loc["50%", "area"], "Perimeter": describe_table.loc["50%", "perimeter"], "Intensity": describe_table.loc["50%", "mean_intensity"]},
+        {"Name": '75%', "Area": describe_table.loc["75%", "area"], "Perimeter": describe_table.loc["75%", "perimeter"], "Intensity": describe_table.loc["75%", "mean_intensity"]},
+        {"Name": 'max', "Area": describe_table.loc["max", "area"], "Perimeter": describe_table.loc["max", "perimeter"], "Intensity": describe_table.loc["max", "mean_intensity"]}
+    ]
+    return metrics
+
 
 with open("README.md", "r") as f:
     howto_md = f.read()
@@ -356,6 +377,31 @@ metric_card = dbc.Card(
     ]
 )
 
+
+describe_card = dbc.Card(
+    [
+        dbc.CardHeader(html.H2("Describe Table", style={'color': 'black'})),
+        dbc.CardBody(
+            dbc.Row(
+                dbc.Col(
+                    [
+                        dash_table.DataTable(
+                                id = "describe",
+                                columns=[{"name": "Name", "id":"Name"}, {"name":"Area", "id":"Area"}, {"name":"Perimeter", "id":"Perimeter"}, {"name":"Intensity", "id":"Intensity"}],
+                                style_cell=dict(textAlign='left', color='white'),
+                                style_header=dict(backgroundColor="darkblue", fontWeight="bold", fontColor="white"),
+                                style_data=dict(backgroundColor="black")
+                        ),
+                        html.Button("Download CSV", id="describe-download"),
+                        dcc.Download(id="download-describe-csv"),
+                    ]
+                )
+            ),
+        ),
+    ]
+)
+
+
 app.layout = html.Div(
     [
         header,        
@@ -365,7 +411,8 @@ app.layout = html.Div(
                               dbc.Row(scaler_input)], md=2)]),
              dbc.Row([dbc.Col(image_card, md=10)]),
              dbc.Row([dbc.Col(distribution_card, md=10)]),
-             dbc.Row([dbc.Col(metric_card, md=8)])
+             dbc.Row([dbc.Col(metric_card, md=8)]),
+             dbc.Row([dbc.Col(describe_card, md=8)])
              ],
             
             fluid=True,
@@ -423,6 +470,7 @@ executor = ThreadPoolExecutor(max_workers=1)
     Output('graph', 'figure'),
     Output("distribution-plot", "figure"),
     Output("results", "data"),
+    Output("describe", "data"),
     Input('run-contour-plot', 'n_clicks'),
     State("output-img-str", "src"),
     State("threshold-input", "value"),
@@ -437,9 +485,10 @@ def start_long_process(n_clicks, src, threshold, scaler):
     if n_clicks > 0:
         future = executor.submit(img_with_contour, img, prep_img, table)
         contour = future.result()
-    distribution_plot = plot_pore_distribution(property_table=table)
+    distribution_plot = plot_pore_distribution(property_table=table, scaler=scaler)
     metrics_table = generate_analysis_table(img=img, property_table=table, scaler=scaler)
-    return True, contour, distribution_plot, metrics_table
+    describe_table = generate_describe_table(img=img, property_table=table, scaler=scaler)
+    return True, contour, distribution_plot, metrics_table, describe_table
 
 
 @app.callback(
@@ -471,6 +520,24 @@ def download_pores_csv(n_clicks, src, threshold, scaler):
     Output("download-table-csv", "data"),
     Input("table-download", "n_clicks"),
     State("results", "data"),
+    prevent_initial_call=True
+)
+def download_metrics_csv(n_clicks, table):
+    if n_clicks is None:
+        raise dash.exceptions.PreventUpdate
+
+    # Convert DataFrame to a CSV string buffer
+    buffer = StringIO()
+    df = pd.DataFrame(table)
+    df.to_csv(buffer, index=False)
+    buffer.seek(0)
+    return dcc.send_string(buffer.getvalue(), "table.csv")
+
+
+@app.callback(
+    Output("download-describe-csv", "data"),
+    Input("describe-download", "n_clicks"),
+    State("describe", "data"),
     prevent_initial_call=True
 )
 def download_metrics_csv(n_clicks, table):
