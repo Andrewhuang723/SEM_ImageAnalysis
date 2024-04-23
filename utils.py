@@ -8,6 +8,7 @@ import dash_bootstrap_components as dbc
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.figure_factory as ff
+import plotly.offline as py
 import datetime
 import io
 from io import StringIO
@@ -89,7 +90,7 @@ def img_with_contour(img: np.array, label_img: np.array, region_table: pd.DataFr
         progress['value'] = int((rid+1) / label_img.max() * 100)
 
         label = row.label
-        contour = measure.find_contours(label_img == label, level=0.5)[0]
+        contour = measure.find_contours(label_img == label, level=0.5, fully_connected="high")[0]
         y, x = contour.T
         hoverinfo = ''
         for prop_name in prop_names:
@@ -116,15 +117,54 @@ def img_with_contour(img: np.array, label_img: np.array, region_table: pd.DataFr
 def plot_pore_distribution(property_table: pd.DataFrame, scaler=1):
     
     property_table["rescale_area"] = property_table["area"].apply(lambda x: x * (scaler ** 2))
-    fig = px.histogram(property_table, x='rescale_area', cumulative=True)
+    fig = px.histogram(property_table, x='rescale_area', marginal='rug', color_discrete_sequence=['darkblue'])
 
 
 
     fig.update_layout(
         title='Pore Size Distribution<br>' + f'Number of pores: {len(property_table)}',
-        xaxis=dict(title="Pore Size(um^2)"),
-        yaxis=dict(title='Cumulative Sum'),
+        xaxis=dict(title=r"$Pore Size(\mu m^2)$"),
+        yaxis=dict(title='Count'),
     )
+    
+    return fig
+
+
+def plot_grayscale_distribution(img, threshold):
+    fig = px.histogram(img.reshape(-1), marginal='rug', color_discrete_sequence=['darkblue'])
+
+    fig.update_layout(
+        title='Grayscale Distribution<br>',
+        xaxis=dict(title="Gray scale"),
+        yaxis=dict(title='Count'),
+    )
+
+    fig.add_shape(
+    # Line Vertical
+    type="line",
+    x0=threshold,  # x-coordinate where the line starts
+    y0=0,  # y-coordinate where the line starts
+    x1=threshold,  # x-coordinate where the line ends
+    y1=1,  # y-coordinate where the line ends, 1 means it stretches to the top
+    line=dict(
+        color="Red",
+        width=2
+    ),
+    xref="x",  # it refers to the x-values of the histogram
+    yref="paper"  # it refers to the relative height of the plot
+    )
+
+    fig.add_annotation(
+        x=threshold,
+        text=f"x = {threshold}",  # Text to display
+        showarrow=True,
+        arrowhead=1,
+        arrowsize=1,
+        arrowwidth=1,
+        arrowcolor="Red",
+        ax=20  # Adjust this to move the text if needed
+    )
+    
     return fig
 
 def generate_analysis_table(img, property_table, scaler):
@@ -354,6 +394,15 @@ distribution_card = dbc.Card([
     ])
 ])
 
+gray_scale_distribution_card = dbc.Card([
+    dbc.CardHeader(html.H2("Gray scale Distribution", style={'color': 'black'})),
+    dbc.CardBody([
+        html.H4("Gray Scale Distribution plot", className="card-title"),
+        dcc.Graph(id='gray-scale-distribution-plot'),
+        html.P("Adjust the threshold.", className="card-text")
+    ])
+])
+
 metric_card = dbc.Card(
     [
         dbc.CardHeader(html.H2("Analysis Table", style={'color': 'black'})),
@@ -409,6 +458,7 @@ app.layout = html.Div(
             [dbc.Row([dbc.Col(img_upload, md=10),  
                       dbc.Col([dbc.Row(threshold_input), 
                               dbc.Row(scaler_input)], md=2)]),
+             dbc.Row([dbc.Col(gray_scale_distribution_card, md=10)]),
              dbc.Row([dbc.Col(image_card, md=10)]),
              dbc.Row([dbc.Col(distribution_card, md=10)]),
              dbc.Row([dbc.Col(metric_card, md=8)]),
@@ -426,6 +476,7 @@ app.layout = html.Div(
 
         Output("output-img-str", "src"),
         Output("output-preprocessed-img-str", "src"),
+        Output("gray-scale-distribution-plot", "figure"),
         Input("upload-img", "contents"),
         Input("threshold-input", "value"),
         Input("scaler-input", "value")
@@ -433,22 +484,15 @@ app.layout = html.Div(
 def update_image(contents, threshold, scaler):
     img = parse_contents_to_array(contents)
 
-    fig = px.imshow(img, binary_string=True)
-    fig.update_layout(
-        title=f'Original Image',
-    )
     array_str = array_to_base64_str(img)
 
     _, prep_img = get_preprocessed_img(img=img, threshold=threshold)
-    prep_fig = px.imshow(prep_img, color_continuous_scale='gray_r')
-    prep_fig.update_layout(
-        title=f'Pore definition is the gray scale <= {threshold}',
-    )
     prep_arr_str = array_to_base64_str(prep_img)
 
+    ## gray-scale distribution
+    fig = plot_grayscale_distribution(img=img, threshold=threshold)
     
-
-    return array_str, prep_arr_str
+    return array_str, prep_arr_str, fig
 
 
 @app.callback(
