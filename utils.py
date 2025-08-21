@@ -19,13 +19,14 @@ from skimage import filters, measure, color, img_as_ubyte
 import PIL
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
+import time
+from functools import lru_cache
 
 
 external_stylesheets = [dbc.themes.BOOTSTRAP, "assets/object_properties_style.css"]
 app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
 server = app.server
 
-# filename = "./image/Chang LLZAO.tif"
 
 prop_names = [
         "label",
@@ -36,46 +37,77 @@ prop_names = [
         "mean_intensity",
     ]
 
+@lru_cache(maxsize=32)
 def parse_contents_to_array(contents):
+    if contents is None:
+        return None
+        
     _, content_string = contents.split(',')
-
     decoded = base64.b64decode(content_string)
+    
+    # Open and optimize image
     image = Image.open(io.BytesIO(decoded))
+    image = optimize_image(image)
+    
+    # Convert to grayscale immediately to reduce memory usage
+    if image.mode != 'L':
+        image = image.convert('L')
+    
     return np.array(image)
 
+def optimize_image(image):
+    """Optimize image size and quality before processing"""
+    # Convert to RGB if image has alpha channel
+    if image.mode in ('RGBA', 'LA'):
+        background = Image.new('RGB', image.size, (255, 255, 255))
+        background.paste(image, mask=image.split()[-1])
+        image = background
+    
+    # Resize if image is too large
+    max_size = 800  # Reduced from 1000 to 800 for faster processing
+    if max(image.size) > max_size:
+        ratio = max_size / max(image.size)
+        new_size = tuple(int(dim * ratio) for dim in image.size)
+        image = image.resize(new_size, Image.Resampling.LANCZOS)
+    
+    return image
 
-def array_to_base64_str(image_array):
+@lru_cache(maxsize=32)
+def array_to_base64_str(image_array_tuple):
+    # Convert tuple back to numpy array
+    image_array = np.array(image_array_tuple)
+    
     # Convert the NumPy array to a PIL Image object
     image = Image.fromarray(image_array.astype(np.uint8))
     
-    # Save the image object to an in-memory bytes buffer
+    # Save the image object to an in-memory bytes buffer with compression
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG")  # PNG is lossless
+    image.save(buffer, format="JPEG", quality=85, optimize=True)  # Changed to JPEG for faster encoding
     buffer.seek(0)
     
     # Encode the image bytes in base64
     base64_str = base64.b64encode(buffer.read()).decode('utf-8')
-    return f"data:image/png;base64,{base64_str}"
+    return f"data:image/jpeg;base64,{base64_str}"
 
-
-
-
-def get_preprocessed_img(img, threshold=None):
-    # img = io.imread(filename, as_gray=True)
+@lru_cache(maxsize=32)
+def get_preprocessed_img(img_tuple, threshold=None):
+    # Convert tuple back to array since numpy arrays aren't hashable
+    img = np.array(img_tuple)
     
     if threshold is None:
         threshold = filters.threshold_otsu(img)
 
-    # img = morphology.closing(img < threshold)
     label_array = measure.label(img < threshold)
-    # Compute and store properties of the labeled image
-    
     prop_table = measure.regionprops_table(
         label_array, intensity_image=img, properties=prop_names
     )
     table = pd.DataFrame(prop_table)
     
     return table, label_array
+
+def numpy_to_tuple(arr):
+    """Convert numpy array to hashable tuple"""
+    return tuple(map(tuple, arr.tolist()))
 
 ## Thread with img_with_contour
 progress = {'value': 0}
@@ -285,7 +317,7 @@ img_upload = dbc.Card(
         'Drag and Drop or ',
         html.A('Select Files')
     ]),
-    
+    accept='image/*',  # Only accept image files
     style={
         'width': '100%',
         'height': '60px',
@@ -299,26 +331,20 @@ img_upload = dbc.Card(
     # Allow multiple files to be uploaded
     multiple=False,
     ),
+    html.Div([
+        dbc.Progress(id="image-progress", value=0, label="0%", striped=True, animated=True),
+    ], style={'margin': '10px'}),
     dbc.Row([
         dbc.Col(
             html.Div([
                 html.H3("Original Image", style={'color': 'black'}),
                 html.Img(id='output-img-str', src='', style={'max-width': '70%', 'max-height': '80%',}),
-                # dcc.Graph(
-                #     id="output-img",
-                #     style={'width': '80', 'height': '50vh'}
-                # ),
             ]),
         ), 
         dbc.Col(
                 html.Div([
                 html.H3("Filtered Image", style={'color': 'black'}),
                 html.Img(id='output-preprocessed-img-str', src='', style={'max-width': '70%', 'max-height': '80%',}),
-                # dcc.Graph(
-                #     id="output-preprocessed-img-src",
-                #     style={'width': '80', 'height': '50vh'}
-                # ),
-                
             ])
         )
     ])
@@ -329,7 +355,16 @@ img_upload = dbc.Card(
 threshold_input = dbc.Card(
     dbc.CardBody([
         html.H4("Threshold", className="card-title"),
-        dbc.Input(type="number", value=90, min=0, max=255, id='threshold-input'),
+        dbc.Row([
+            dbc.Col(
+                dbc.Input(type="number", value=90, min=0, max=255, id='threshold-input'),
+                width=8
+            ),
+            dbc.Col(
+                dbc.Button("Apply", id="apply-threshold", color="primary"),
+                width=4
+            )
+        ]),
         html.P("* threshold = grayscale", className="card-text")
     ])
 )
@@ -470,29 +505,53 @@ app.layout = html.Div(
     ]
 )
 
-
 @app.callback(
-        # Output('output-img', 'figure'),
-
         Output("output-img-str", "src"),
         Output("output-preprocessed-img-str", "src"),
         Output("gray-scale-distribution-plot", "figure"),
+        Output("image-progress", "value"),
+        Output("image-progress", "label"),
         Input("upload-img", "contents"),
-        Input("threshold-input", "value"),
-        Input("scaler-input", "value")
+        Input("apply-threshold", "n_clicks"),
+        State("threshold-input", "value"),
+        State("scaler-input", "value")
 )
-def update_image(contents, threshold, scaler):
-    img = parse_contents_to_array(contents)
-
-    array_str = array_to_base64_str(img)
-
-    _, prep_img = get_preprocessed_img(img=img, threshold=threshold)
-    prep_arr_str = array_to_base64_str(prep_img)
-
-    ## gray-scale distribution
-    fig = plot_grayscale_distribution(img=img, threshold=threshold)
+def update_image(contents, n_clicks, threshold, scaler):
+    if contents is None:
+        raise dash.exceptions.PreventUpdate
+        
+    # Initialize progress
+    progress = 0
     
-    return array_str, prep_arr_str, fig
+    try:
+        # Parse and optimize image (25%)
+        img = parse_contents_to_array(contents)
+        if img is None:
+            raise ValueError("Failed to parse image")
+        progress = 25
+        
+        # Process image and convert to base64 in parallel (75%)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            img_tuple = numpy_to_tuple(img)
+            future_base64 = executor.submit(array_to_base64_str, img_tuple)
+            future_processed = executor.submit(get_preprocessed_img, img_tuple, threshold)
+            
+            array_str = future_base64.result()
+            table, prep_img = future_processed.result()
+            progress = 75
+        
+        # Final conversion (100%)
+        prep_img_tuple = numpy_to_tuple(prep_img)
+        prep_arr_str = array_to_base64_str(prep_img_tuple)
+        progress = 100
+
+        ## gray-scale distribution
+        fig = plot_grayscale_distribution(img=img, threshold=threshold)
+        
+        return array_str, prep_arr_str, fig, progress, f"{progress}%"
+    except Exception as e:
+        print(f"Error processing image: {str(e)}")
+        raise dash.exceptions.PreventUpdate
 
 
 @app.callback(
@@ -524,7 +583,8 @@ executor = ThreadPoolExecutor(max_workers=1)
 def start_long_process(n_clicks, src, threshold, scaler):
     contents = src
     img = parse_contents_to_array(contents=contents)
-    table, prep_img = get_preprocessed_img(img=img, threshold=threshold)
+    img_tuple = numpy_to_tuple(img)
+    table, prep_img = get_preprocessed_img(img_tuple, threshold)
 
     if n_clicks > 0:
         future = executor.submit(img_with_contour, img, prep_img, table)
@@ -551,7 +611,7 @@ def download_pores_csv(n_clicks, src, threshold, scaler):
 
     # Convert DataFrame to a CSV string buffer
     buffer = StringIO()
-    df, _ = get_preprocessed_img(img=img, threshold=threshold)
+    df, _ = get_preprocessed_img(numpy_to_tuple(img), threshold)
     df["area"] *= (scaler ** 2)
     df["perimeter"] *= scaler
 
@@ -596,9 +656,5 @@ def download_metrics_csv(n_clicks, table):
     return dcc.send_string(buffer.getvalue(), "table.csv")
 
 
-
-
-
-
 if __name__ == "__main__":
-    app.run_server(debug=False)
+    app.run_server(debug=False, port=8000)

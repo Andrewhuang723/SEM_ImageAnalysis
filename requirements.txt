@@ -1,0 +1,8 @@
+dash==2.14.1
+dash-bootstrap-components==1.5.0
+plotly==5.17.0
+pandas==2.1.1
+numpy==1.24.3
+Pillow==10.0.1
+scikit-image==0.21.0
+gunicorn==21.2.0
