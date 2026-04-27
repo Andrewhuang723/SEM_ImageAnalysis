@@ -9,7 +9,8 @@ import io
 import numpy as np
 import pandas as pd
 from PIL import Image
-from skimage import filters, measure, morphology
+from scipy import ndimage as ndi
+from skimage import filters, morphology, measure, feature, segmentation, color
 from skimage.segmentation import clear_border
 from datetime import datetime
 
@@ -79,11 +80,20 @@ def crop_image(image, top, bottom, left, right):
     
     return image[top:bottom, left:right]
 
-def create_binary_image(image, threshold):
-    """Create binary image based on threshold"""
+def create_binary_image(image, threshold=None, threshold_2=None):
+    """Create binary image based on thresholds"""
     if image is None:
         return None
-    return image < threshold
+
+    if threshold is None:
+        threshold = filters.threshold_otsu(image)
+
+    if threshold_2 is not None:
+        binary_image = (image < threshold) & (image > threshold_2)
+    else:
+        binary_image = image < threshold
+    return binary_image
+
 
 def analyze_regions(binary_img, original_img):
     """Analyze dark regions in binary image"""
@@ -102,6 +112,21 @@ def analyze_regions(binary_img, original_img):
     
     return labeled, props
 
+
+def anaylyze_particle_regions(binary_img, original_img):
+    """Analyze dark regions in binary image"""
+    binary = ndi.binary_fill_holes(binary_img)
+    binary = morphology.binary_opening(binary, footprint=morphology.disk(3))
+    distance = ndi.distance_transform_edt(binary)
+    coords = feature.peak_local_max(distance, min_distance=5, labels=binary)
+    mask = np.zeros(distance.shape, dtype=bool)
+    mask[tuple(coords.T)] = True
+    markers, _ = ndi.label(mask)
+    labeled = segmentation.watershed(-distance, markers, mask=binary)
+    props = measure.regionprops(labeled, intensity_image=original_img)
+    
+    return labeled, props
+
 # Layout
 app.layout = dbc.Container([
     dbc.Row([
@@ -111,198 +136,258 @@ app.layout = dbc.Container([
         ])
     ]),
     
-    # Block 1: Image Upload and Display
-    dbc.Row([
-        dbc.Col([
-            dbc.Card([
-                dbc.CardHeader(html.H4("Block 1: Upload SEM Image & Crop")),
-                dbc.CardBody([
-                    dcc.Upload(
-                        id='upload-image',
-                        children=html.Div([
-                            'Drag and Drop or ',
-                            html.A('Select SEM Image')
-                        ]),
-                        style={
-                            'width': '100%',
-                            'height': '60px',
-                            'lineHeight': '60px',
-                            'borderWidth': '1px',
-                            'borderStyle': 'dashed',
-                            'borderRadius': '5px',
-                            'textAlign': 'center',
-                            'margin': '10px'
-                        },
-                        multiple=False
-                    ),
-                    html.Br(),
-                    # Cropping controls
-                    html.Div(id='crop-controls', children=[
-                        html.Label("Crop Area (pixels):"),
-                        dbc.Row([
-                            dbc.Col([
-                                html.Label("Top:"),
-                                dcc.Input(id='crop-top', type='number', value=0, min=0)
-                            ], width=3),
-                            dbc.Col([
-                                html.Label("Bottom:"),
-                                dcc.Input(id='crop-bottom', type='number', value=-1, min=-1)
-                            ], width=3),
-                            dbc.Col([
-                                html.Label("Left:"),
-                                dcc.Input(id='crop-left', type='number', value=0, min=0)
-                            ], width=3),
-                            dbc.Col([
-                                html.Label("Right:"),
-                                dcc.Input(id='crop-right', type='number', value=-1, min=-1)
-                            ], width=3)
-                        ]),
-                        html.Br(),
-                        dbc.Button("Apply Crop", id='apply-crop-btn', color='primary', size='sm'),
-                        dbc.Button("Reset", id='reset-crop-btn', color='secondary', size='sm', className='ms-2')
-                    ], style={'display': 'none'}),
-                    html.Br(),
-                    dcc.Graph(id='original-image')
-                ])
-            ])
-        ], width=6),
-        
-        # Block 2: Threshold Control and Binary Image
-        dbc.Col([
-            dbc.Card([
-                dbc.CardHeader(html.H4("Block 2: Threshold Control")),
-                dbc.CardBody([
-                    html.Label("Threshold Value:"),
-                    dcc.Slider(
-                        id='threshold-slider',
-                        min=0,
-                        max=255,
-                        step=1,
-                        value=127,
-                        marks={i: str(i) for i in range(0, 256, 50)},
-                        tooltip={"placement": "bottom", "always_visible": True}
-                    ),
-                    html.Br(),
-                    dcc.Graph(id='binary-image')
-                ])
-            ])
-        ], width=6)
-    ], className="mb-4"),
-    
-    # Block 4: Distribution Analysis
-    dbc.Row([
-        dbc.Col([
-            dbc.Card([
-                dbc.CardHeader(html.H4("Block 4: Area Distribution")),
-                dbc.CardBody([
-                    dcc.Graph(id='distribution-plot'),
-                    html.Div(id='distribution-stats')
-                ])
-            ])
-        ], width=12)
-    ], className="mb-4"),
-    
-    # Save Analysis Button Row
-    dbc.Row([
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.Div([
-                        dbc.Button(
-                            "Save Current Analysis", 
-                            id='save-analysis-btn', 
-                            color='success', 
-                            size='lg', 
-                            className='me-3'
-                        ),
-                        dbc.Button(
-                            "Clear All Logs", 
-                            id='clear-log-btn', 
-                            color='danger', 
-                            size='lg',
-                            outline=True
-                        ),
-                        dbc.Button(
-                            "Export to CSV", 
-                            id='export-csv-btn', 
-                            color='info', 
-                            size='lg',
-                            className='ms-3'
-                        ),
-                        dcc.Download(id="download-csv")
-                    ], className='text-center'),
-                    html.Div(id='save-status', className='mt-3')
-                ])
-            ])
-        ])
-    ], className="mb-4"),
-    
-    # Block 5: Analysis Log
-    dbc.Row([
-        dbc.Col([
-            dbc.Card([
-                dbc.CardHeader(html.H4("Block 5: Analysis Log")),
-                dbc.CardBody([
-                    html.Div([
-                        html.H6("Analysis Summary:", className="mb-3"),
-                        html.Div(id='log-summary'),
-                        html.Hr(),
-                        dbc.Row([
-                            dbc.Col([
-                                dbc.Button(
-                                    "Delete Selected Rows", 
-                                    id='delete-selected-btn', 
-                                    color='warning', 
-                                    size='sm',
-                                    disabled=True
-                                )
-                            ], width=6),
-                            dbc.Col([
-                                html.Div(id='selection-info', className='text-muted')
-                            ], width=6)
-                        ], className="mb-3"),
-                        dash_table.DataTable(
-                            id='analysis-log-table',
-                            columns=[
-                                {'name': 'Timestamp', 'id': 'timestamp'},
-                                {'name': 'Filename', 'id': 'filename'},
-                                {'name': 'Threshold', 'id': 'threshold', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                                {'name': 'Porosity (%)', 'id': 'porosity', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-                                {'name': 'Pore Count', 'id': 'pore_count', 'type': 'numeric'},
-                                {'name': 'Mean Pore Size (px)', 'id': 'mean_pore_size', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                                {'name': 'Total Dark Area (px)', 'id': 'total_dark_area', 'type': 'numeric'}
-                            ],
-                            data=[],
-                            row_selectable="multi",
-                            selected_rows=[],
-                            style_table={'overflowX': 'auto'},
-                            style_cell={
-                                'textAlign': 'center',
-                                'padding': '10px',
-                                'fontFamily': 'Arial'
-                            },
-                            style_header={
-                                'backgroundColor': 'rgb(230, 230, 230)',
-                                'fontWeight': 'bold'
-                            },
-                            style_data_conditional=[
-                                {
-                                    'if': {'row_index': 'odd'},
-                                    'backgroundColor': 'rgb(248, 248, 248)'
+    dcc.Tabs([
+        dcc.Tab(label="Analysis", children=[
+            # Block 1: Image Upload and Display
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader(html.H4("Block 1: Upload SEM Image & Crop")),
+                        dbc.CardBody([
+                            dcc.Upload(
+                                id='upload-image',
+                                children=html.Div([
+                                    'Drag and Drop or ',
+                                    html.A('Select SEM Image')
+                                ]),
+                                style={
+                                    'width': '100%',
+                                    'height': '60px',
+                                    'lineHeight': '60px',
+                                    'borderWidth': '1px',
+                                    'borderStyle': 'dashed',
+                                    'borderRadius': '5px',
+                                    'textAlign': 'center',
+                                    'margin': '10px'
                                 },
-                                {
-                                    'if': {'state': 'selected'},
-                                    'backgroundColor': 'rgba(255, 193, 7, 0.2)',
-                                    'border': '1px solid rgb(255, 193, 7)'
-                                }
-                            ],
-                            sort_action="native",
-                            page_action="native",
-                            page_size=10
-                        )
+                                multiple=False
+                            ),
+                            html.Br(),
+                            # Cropping controls
+                            html.Div(id='crop-controls', children=[
+                                html.Label("Crop Area (pixels):"),
+                                dbc.Row([
+                                    dbc.Col([
+                                        html.Label("Top:"),
+                                        dcc.Input(id='crop-top', type='number', value=0, min=0)
+                                    ], width=3),
+                                    dbc.Col([
+                                        html.Label("Bottom:"),
+                                        dcc.Input(id='crop-bottom', type='number', value=-1, min=-1)
+                                    ], width=3),
+                                    dbc.Col([
+                                        html.Label("Left:"),
+                                        dcc.Input(id='crop-left', type='number', value=0, min=0)
+                                    ], width=3),
+                                    dbc.Col([
+                                        html.Label("Right:"),
+                                        dcc.Input(id='crop-right', type='number', value=-1, min=-1)
+                                    ], width=3)
+                                ]),
+                                html.Br(),
+                                dbc.Button("Apply Crop", id='apply-crop-btn', color='primary', size='sm'),
+                                dbc.Button("Reset", id='reset-crop-btn', color='secondary', size='sm', className='ms-2')
+                            ], style={'display': 'none'}),
+                            html.Br(),
+                            dcc.Graph(id='original-image')
+                        ])
+                    ])
+                ], width=6),
+                
+                # Block 2: Threshold Control and Binary Image
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader(html.H4("Block 2: Threshold Control")),
+                        dbc.CardBody([
+                            html.Label("Binary Mode:"),
+                            dcc.Dropdown(
+                                id='binary-mode',
+                                options=[
+                                    {'label': 'Particle', 'value': 'particle'},
+                                    {'label': 'Pore', 'value': 'pore'}
+                                ],
+                                value='pore',
+                                clearable=False
+                            ),
+                            html.Br(),
+                            html.Label("Threshold Value:"),
+                            dcc.Slider(
+                                id='threshold-slider',
+                                min=0,
+                                max=255,
+                                step=1,
+                                value=127,
+                                marks={i: str(i) for i in range(0, 256, 50)},
+                                tooltip={"placement": "bottom", "always_visible": True}
+                            ),
+                            html.Br(),
+                            html.Label("Threshold 2 (Optional):"),
+                            dcc.Slider(
+                                id='threshold-2-slider',
+                                min=0,
+                                max=255,
+                                step=1,
+                                value=0,
+                                marks={i: str(i) for i in range(0, 256, 50)},
+                                tooltip={"placement": "bottom", "always_visible": True}
+                            ),
+                            html.Br(),
+                            dcc.Graph(id='binary-image')
+                        ])
+                    ])
+                ], width=6)
+            ], className="mb-4"),
+            
+            # Block 4: Distribution Analysis
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader(html.H4("Block 4: Area Distribution")),
+                        dbc.CardBody([
+                            dcc.Graph(id='distribution-plot'),
+                            html.Div(id='distribution-stats')
+                        ])
+                    ])
+                ], width=12)
+            ], className="mb-4"),
+            
+            # Save Analysis Button Row
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.Div([
+                                dbc.Button(
+                                    "Save Current Analysis", 
+                                    id='save-analysis-btn', 
+                                    color='success', 
+                                    size='lg', 
+                                    className='me-3'
+                                ),
+                                dbc.Button(
+                                    "Clear All Logs", 
+                                    id='clear-log-btn', 
+                                    color='danger', 
+                                    size='lg',
+                                    outline=True
+                                ),
+                                dbc.Button(
+                                    "Export to CSV", 
+                                    id='export-csv-btn', 
+                                    color='info', 
+                                    size='lg',
+                                    className='ms-3'
+                                ),
+                                dcc.Download(id="download-csv")
+                            ], className='text-center'),
+                            html.Div(id='save-status', className='mt-3')
+                        ])
+                    ])
+                ])
+            ], className="mb-4"),
+            
+            # Block 5: Analysis Log
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader(html.H4("Block 5: Analysis Log")),
+                        dbc.CardBody([
+                            html.Div([
+                                html.H6("Analysis Summary:", className="mb-3"),
+                                html.Div(id='log-summary'),
+                                html.Hr(),
+                                dbc.Row([
+                                    dbc.Col([
+                                        html.Label("Pixel-to-µm scale (µm/pixel):"),
+                                        dcc.Input(
+                                            id='scale-factor',
+                                            type='number',
+                                            min=0,
+                                            step=0.001,
+                                            placeholder='e.g., 0.05'
+                                        )
+                                    ], width=6),
+                                    dbc.Col([
+                                        html.Div("Leave empty to keep pixels.", className='text-muted')
+                                    ], width=6)
+                                ], className="mb-3"),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Button(
+                                            "Delete Selected Rows", 
+                                            id='delete-selected-btn', 
+                                            color='warning', 
+                                            size='sm',
+                                            disabled=True
+                                        )
+                                    ], width=6),
+                                    dbc.Col([
+                                        html.Div(id='selection-info', className='text-muted')
+                                    ], width=6)
+                                ], className="mb-3"),
+                                dash_table.DataTable(
+                                    id='analysis-log-table',
+                                    columns=[
+                                        {'name': 'Timestamp', 'id': 'timestamp'},
+                                        {'name': 'Filename', 'id': 'filename'},
+                                        {'name': 'Threshold', 'id': 'threshold', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                        {'name': 'Threshold 2', 'id': 'threshold_2', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                        {'name': 'Binary Mode', 'id': 'binary_mode'},
+                                        {'name': 'Scale (µm/px)', 'id': 'scale_factor', 'type': 'numeric', 'format': {'specifier': '.4f'}},
+                                        {'name': 'D10', 'id': 'd10', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                        {'name': 'D50', 'id': 'd50', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                        {'name': 'D90', 'id': 'd90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                        {'name': 'Porosity (%)', 'id': 'porosity', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                        {'name': 'Pore Count', 'id': 'pore_count', 'type': 'numeric'},
+                                        {'name': 'Mean Pore Size (px)', 'id': 'mean_pore_size', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                        {'name': 'Total Dark Area (px)', 'id': 'total_dark_area', 'type': 'numeric'}
+                                    ],
+                                    data=[],
+                                    row_selectable="multi",
+                                    selected_rows=[],
+                                    style_table={'overflowX': 'auto'},
+                                    style_cell={
+                                        'textAlign': 'center',
+                                        'padding': '10px',
+                                        'fontFamily': 'Arial'
+                                    },
+                                    style_header={
+                                        'backgroundColor': 'rgb(230, 230, 230)',
+                                        'fontWeight': 'bold'
+                                    },
+                                    style_data_conditional=[
+                                        {
+                                            'if': {'row_index': 'odd'},
+                                            'backgroundColor': 'rgb(248, 248, 248)'
+                                        },
+                                        {
+                                            'if': {'state': 'selected'},
+                                            'backgroundColor': 'rgba(255, 193, 7, 0.2)',
+                                            'border': '1px solid rgb(255, 193, 7)'
+                                        }
+                                    ],
+                                    sort_action="native",
+                                    page_action="native",
+                                    page_size=10
+                                )
+                            ])
+                        ])
                     ])
                 ])
             ])
+        ]),
+        dcc.Tab(label="Diameter Distribution", children=[
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader(html.H4("Particle Diameter Distribution")),
+                        dbc.CardBody([
+                            dcc.Graph(id='diameter-plot'),
+                            html.Div(id='diameter-stats')
+                        ])
+                    ])
+                ], width=12)
+            ], className="mb-4")
         ])
     ])
 ], fluid=True)
@@ -400,26 +485,36 @@ def update_original_image(contents, apply_clicks, reset_clicks, crop_top, crop_b
 @app.callback(
     Output('binary-image', 'figure'),
     [Input('threshold-slider', 'value'),
+    Input('threshold-2-slider', 'value'),
+    Input('binary-mode', 'value'),
      Input('upload-image', 'contents'),
      Input('apply-crop-btn', 'n_clicks'),
      Input('reset-crop-btn', 'n_clicks')]
 )
-def update_binary_image(threshold, contents, apply_clicks, reset_clicks):
+def update_binary_image(threshold, threshold_2, binary_mode, contents, apply_clicks, reset_clicks):
     global binary_data
     
     if image_data is None:
         return px.scatter(title="Upload an image first")
     
+    threshold_2_value = threshold_2 if threshold_2 and threshold_2 > 0 else None
+
     # Create binary image
-    binary_data = create_binary_image(image_data, threshold)
+    binary_data = create_binary_image(image_data, threshold, threshold_2_value)
     
     # Calculate porosity
     porosity = np.sum(binary_data) / binary_data.size * 100
+
+    if binary_mode == 'particle':
+        labeled_data, regions_data = anaylyze_particle_regions(binary_data, image_data)
+    else:
+        labeled_data, regions_data = analyze_regions(binary_data, image_data)
     
-    # Create figure
+    # # Create figure (label overlay on original image)
+    # labels = measure.label(binary_data)
+    overlay = color.label2rgb(labeled_data, image=image_data, bg_label=0)
     fig = px.imshow(
-        binary_data.astype(int), 
-        color_continuous_scale=[[0, 'white'], [1, 'black']],
+        overlay,
         title=f"Binary Image (Threshold: {threshold}, Porosity: {porosity:.1f}%)"
     )
     fig.update_layout(
@@ -434,24 +529,30 @@ def update_binary_image(threshold, contents, apply_clicks, reset_clicks):
     [Output('distribution-plot', 'figure'),
      Output('distribution-stats', 'children')],
     [Input('threshold-slider', 'value'),
+    Input('threshold-2-slider', 'value'),
+    Input('binary-mode', 'value'),
      Input('upload-image', 'contents'),
      Input('apply-crop-btn', 'n_clicks'),
      Input('reset-crop-btn', 'n_clicks')]
 )
-def update_distribution(threshold, contents, apply_clicks, reset_clicks):
+def update_distribution(threshold, threshold_2, binary_mode, contents, apply_clicks, reset_clicks):
     global labeled_data, regions_data
     
     if image_data is None or binary_data is None:
         return px.scatter(title="Process image first"), ""
     
-    # Analyze regions (moved from the removed third block)
-    labeled_data, regions_data = analyze_regions(binary_data, image_data)
+    # Analyze regions based on mode
+    if binary_mode == 'particle':
+        labeled_data, regions_data = anaylyze_particle_regions(binary_data, image_data)
+    else:
+        labeled_data, regions_data = analyze_regions(binary_data, image_data)
     
     if regions_data is None or len(regions_data) == 0:
         return px.scatter(title="No regions to analyze"), ""
     
     # Extract areas
     areas = [region.area for region in regions_data]
+    diameters = [region.equivalent_diameter_area for region in regions_data]
     
     # Create histogram
     fig = px.histogram(
@@ -484,6 +585,61 @@ def update_distribution(threshold, contents, apply_clicks, reset_clicks):
     
     return fig, stats
 
+# Callback for diameter distribution page
+@app.callback(
+    [Output('diameter-plot', 'figure'),
+     Output('diameter-stats', 'children')],
+    [Input('threshold-slider', 'value'),
+     Input('threshold-2-slider', 'value'),
+     Input('binary-mode', 'value'),
+     Input('upload-image', 'contents'),
+     Input('apply-crop-btn', 'n_clicks'),
+     Input('reset-crop-btn', 'n_clicks')]
+)
+def update_diameter_distribution(threshold, threshold_2, binary_mode, contents, apply_clicks, reset_clicks):
+    global labeled_data, regions_data
+
+    if image_data is None or binary_data is None:
+        return px.scatter(title="Process image first"), ""
+
+    if binary_mode == 'particle':
+        labeled_data, regions_data = anaylyze_particle_regions(binary_data, image_data)
+    else:
+        labeled_data, regions_data = analyze_regions(binary_data, image_data)
+
+    if regions_data is None or len(regions_data) == 0:
+        return px.scatter(title="No regions to analyze"), ""
+
+    diameters = [region.equivalent_diameter for region in regions_data]
+
+    fig = px.histogram(
+        x=diameters,
+        nbins=40,
+        title="Particle Diameter Distribution",
+        labels={'x': 'Diameter (pixels)', 'y': 'Count'}
+    )
+
+    d10, d50, d90 = np.percentile(diameters, [10, 50, 90])
+    fig.add_vline(x=d50, line_dash="dash", line_color="red",
+                  annotation_text=f"D50: {d50:.2f}")
+
+    fig.update_layout(
+        xaxis_title="Diameter (pixels)",
+        yaxis_title="Frequency",
+        showlegend=False
+    )
+
+    stats = html.Div([
+        html.H6("Diameter Statistics:"),
+        html.P(f"D10: {d10:.2f} px"),
+        html.P(f"D50: {d50:.2f} px"),
+        html.P(f"D90: {d90:.2f} px"),
+        html.P(f"Mean diameter: {np.mean(diameters):.2f} px"),
+        html.P(f"Median diameter: {np.median(diameters):.2f} px")
+    ])
+
+    return fig, stats
+
 # Callback for saving analysis results
 @app.callback(
     [Output('save-status', 'children'),
@@ -493,9 +649,12 @@ def update_distribution(threshold, contents, apply_clicks, reset_clicks):
      Input('clear-log-btn', 'n_clicks'),
      Input('delete-selected-btn', 'n_clicks')],
     [State('threshold-slider', 'value'),
+     State('threshold-2-slider', 'value'),
+     State('binary-mode', 'value'),
+        State('scale-factor', 'value'),
      State('analysis-log-table', 'selected_rows')]
 )
-def handle_analysis_log(save_clicks, clear_clicks, delete_clicks, threshold, selected_rows):
+def handle_analysis_log(save_clicks, clear_clicks, delete_clicks, threshold, threshold_2, binary_mode, scale_factor, selected_rows):
     global analysis_log, current_filename, binary_data, regions_data, image_data
     
     ctx = callback_context
@@ -523,6 +682,12 @@ def handle_analysis_log(save_clicks, clear_clicks, delete_clicks, threshold, sel
         if image_data is None or binary_data is None:
             return html.Div("No analysis to save. Please process an image first!", 
                           className="alert alert-warning"), analysis_log, create_log_summary()
+
+        # Ensure regions_data matches current mode
+        if binary_mode == 'particle':
+            _, regions_data = anaylyze_particle_regions(binary_data, image_data)
+        else:
+            _, regions_data = analyze_regions(binary_data, image_data)
         
         # Calculate analysis metrics
         porosity = np.sum(binary_data) / binary_data.size * 100
@@ -530,12 +695,33 @@ def handle_analysis_log(save_clicks, clear_clicks, delete_clicks, threshold, sel
         pore_count = len(regions_data) if regions_data else 0
         mean_pore_size = np.mean([region.area for region in regions_data]) if regions_data else 0
         total_dark_area = sum(region.area for region in regions_data) if regions_data else 0
+
+        diameters = [region.equivalent_diameter for region in regions_data] if regions_data else []
+        if diameters:
+            d10, d50, d90 = np.percentile(diameters, [10, 50, 90])
+        else:
+            d10 = d50 = d90 = None
+
+        scale_value = scale_factor if scale_factor and scale_factor > 0 else None
+        if scale_value:
+            mean_pore_size = mean_pore_size * (scale_value ** 2)
+            total_dark_area = total_dark_area * (scale_value ** 2)
+            if d10 is not None:
+                d10 *= scale_value
+                d50 *= scale_value
+                d90 *= scale_value
         
         # Create new log entry
         new_entry = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'filename': current_filename or 'Unknown',
             'threshold': threshold,
+            'threshold_2': threshold_2 if threshold_2 and threshold_2 > 0 else None,
+            'binary_mode': binary_mode,
+            'scale_factor': scale_value,
+            'd10': d10,
+            'd50': d50,
+            'd90': d90,
             'porosity': porosity,
             'pore_count': pore_count,
             'mean_pore_size': mean_pore_size,
@@ -599,7 +785,7 @@ def update_delete_button(selected_rows):
 
 if __name__ == '__main__':
     # For local development
-    app.run_server(debug=True, port=5050, host='0.0.0.0')
+    app.run_server(debug=True, port=5050)
 else:
     # For production deployment (when imported as a module)
     server = app.server
