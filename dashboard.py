@@ -784,4 +784,4 @@ def update_delete_button(selected_rows):
         return button_disabled, info_text
 
 if __name__ == '__main__':
-    app.run_server(debug=True, port=5050)
+    app.run(debug=True, port=5050)
