@@ -784,8 +784,4 @@ def update_delete_button(selected_rows):
         return button_disabled, info_text
 
 if __name__ == '__main__':
-    # For local development
     app.run_server(debug=True, port=5050)
-else:
-    # For production deployment (when imported as a module)
-    server = app.server
