@@ -1,3 +1,5 @@
+import os
+
 import dash
 from dash import dcc, html, Input, Output, State, callback_context, dash_table
 import dash_bootstrap_components as dbc
@@ -784,4 +786,5 @@ def update_delete_button(selected_rows):
         return button_disabled, info_text
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5050)
+    port = int(os.environ.get('PORT', 5002))
+    app.run(host='0.0.0.0', port=port, debug=False)
